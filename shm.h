@@ -3,12 +3,22 @@
 
 #include <sys/types.h>
 #include <time.h>
+#include <assert.h>
 
 /** Configuration constants */
 #define MAX_MESSAGES 100
 #define MAX_DIALOGUES 10
 #define MAX_PARTICIPANTS 20
 #define MAX_CONTENT_LENGTH 256
+
+/** IPC resource keys - use collision-resistant values */
+#define SHM_KEY  0x4D534700U   /* 'MSG\0' - more collision-resistant */
+#define SEM_KEY  0x4D534701U   /* semaphore key base */
+
+/** Compile-time assertion: bitmap must be large enough for MAX_PARTICIPANTS */
+_Static_assert(MAX_PARTICIPANTS <= (int)(sizeof(unsigned int) * 8), 
+               "MAX_PARTICIPANTS exceeds bitmap capacity (32 bits)");
+
 
 /** Message structure for the circular buffer */
 typedef struct {

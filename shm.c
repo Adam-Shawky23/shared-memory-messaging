@@ -18,9 +18,8 @@ int leave_dialogue(SharedMemory *shm, int dialogue_id, pid_t pid);
 int find_dialogue(SharedMemory *shm, int dialogue_id);
 int get_participant_index(Dialogue *dlg, pid_t pid);
 
-/* IPC resource keys - stored as internal constants in this C file */
-#define SHM_KEY 1234
-#define SEM_KEY 5678
+/* IPC resource keys are now defined in shm.h for consistency */
+/* Note: Keys imported from shm.h */
 
 /* ============================================================================
    SEMAPHORE OPERATIONS
@@ -165,7 +164,6 @@ void init_shared_memory(SharedMemory *shm) {
     printf("  Message available semaphore ID: %d\n", shm->msg_available_semid);
     printf("  Slot-available semaphore ID: %d\n", shm->slot_available_semid);
 }
-}
 
 /* ============================================================================
    PUBLIC API - DIALOGUE AND MESSAGE MANAGEMENT
@@ -272,10 +270,16 @@ int send_message(SharedMemory *shm, int dlg_id, const char *message, pid_t sende
 
     shm->message_write_index = (msg_idx + 1) % MAX_MESSAGES;
 
+    /* IMPORTANT: Copy message content to local buffer BEFORE releasing mutex.
+       Otherwise another process could overwrite this slot between sem_up and strcmp. */
+    char msg_content_copy[MAX_CONTENT_LENGTH];
+    strncpy(msg_content_copy, msg->content, MAX_CONTENT_LENGTH - 1);
+    msg_content_copy[MAX_CONTENT_LENGTH - 1] = '\0';
+
     sem_up(shm->mutex_semid);
     sem_up(shm->msg_available_semid);
 
-    if (strcmp(msg->content, "TERMINATE") == 0) {
+    if (strcmp(msg_content_copy, "TERMINATE") == 0) {
         int cleaned = terminate_dialogue(shm, dlg_id, sender_pid);
         if (cleaned) {
             /* If we removed IPC, caller is responsible for shmem detach */
@@ -522,28 +526,105 @@ int leave_dialogue(SharedMemory *shm, int dialogue_id, pid_t pid) {
 /**
  * Join an existing dialogue
  * @return Index of dialogue on success, -1 on failure (dialogue not found or full)
+ *
+ * NOTE: This function must be called without holding the mutex.
+ * It acquires the mutex internally for thread-safe access.
  */
 int join_dialogue(SharedMemory *shm, int dialogue_id, pid_t joiner_pid) {
+    sem_down(shm->mutex_semid);
+    
     int idx = find_dialogue(shm, dialogue_id);
-    if (idx == -1) return -1;
+    if (idx == -1) {
+        sem_up(shm->mutex_semid);
+        return -1;
+    }
     
     Dialogue *dlg = &shm->dialogues[idx];
-    if (dlg->num_participants >= MAX_PARTICIPANTS) return -1;
+    if (dlg->num_participants >= MAX_PARTICIPANTS) {
+        sem_up(shm->mutex_semid);
+        return -1;
+    }
     
     /* Check if already a participant */
     for (int i = 0; i < dlg->num_participants; i++) {
         if (dlg->participant_pids[i] == joiner_pid) {
+            sem_up(shm->mutex_semid);
             return idx; /* Already participating */
         }
     }
     
     dlg->participant_pids[dlg->num_participants] = joiner_pid;
     dlg->num_participants++;
+    
+    sem_up(shm->mutex_semid);
     return idx;
 }
 
 /**
- * Display information about a dialogue
+ * List all active dialogues (read-only, non-blocking)
+ * Provides a snapshot of current system state without attaching as participant
+ */
+void list_dialogues(SharedMemory *shm) {
+    printf("\n=== Active Dialogues ===\n");
+    sem_down(shm->mutex_semid);
+    
+    int found = 0;
+    for (int i = 0; i < MAX_DIALOGUES; i++) {
+        if (shm->dialogues[i].is_active) {
+            Dialogue *dlg = &shm->dialogues[i];
+            printf("ID: %d  |  Participants: %d  |  Messages Sent: %d\n",
+                   dlg->dialogue_id, dlg->num_participants, dlg->next_sequence_number);
+            found = 1;
+        }
+    }
+    
+    if (!found) {
+        printf("(No active dialogues)\n");
+    }
+    
+    sem_up(shm->mutex_semid);
+}
+
+/**
+ * Display comprehensive system status
+ * Shows current state of shared memory, semaphores, and buffers
+ */
+void print_system_status(SharedMemory *shm) {
+    printf("\n=== Shared Memory Status ===\n");
+    sem_down(shm->mutex_semid);
+    
+    /* Count active messages and semaphore values */
+    int active_msgs = 0;
+    for (int i = 0; i < MAX_MESSAGES; i++) {
+        if (shm->messages[i].is_active) active_msgs++;
+    }
+    
+    int sem_mutex_val = semctl(shm->mutex_semid, 0, GETVAL);
+    int sem_msg_val = semctl(shm->msg_available_semid, 0, GETVAL);
+    int sem_slots_val = semctl(shm->slot_available_semid, 0, GETVAL);
+    
+    printf("Dialogues:       %d/%d active\n", shm->num_active_dialogues, MAX_DIALOGUES);
+    printf("Message Buffer:  %d/%d slots used\n", active_msgs, MAX_MESSAGES);
+    printf("Active Readers:  %d\n", shm->active_reader_count);
+    printf("\nSemaphore Values:\n");
+    printf("  mutex:         %d (1=available, 0=locked)\n", sem_mutex_val);
+    printf("  msg_available: %d (messages ready to read)\n", sem_msg_val);
+    printf("  slot_available:%d (free buffer slots)\n", sem_slots_val);
+    
+    printf("\n--- Active Dialogues ---\n");
+    for (int i = 0; i < MAX_DIALOGUES; i++) {
+        if (shm->dialogues[i].is_active) {
+            Dialogue *dlg = &shm->dialogues[i];
+            printf("[%d] ID=%d  parts=%d  seq=%d\n",
+                   i, dlg->dialogue_id, dlg->num_participants, dlg->next_sequence_number);
+        }
+    }
+    
+    sem_up(shm->mutex_semid);
+}
+
+/**
+ * Display information about a specific dialogue
  */
 void display_dialogue(SharedMemory *shm, int dialogue_id) {
     int idx = find_dialogue(shm, dialogue_id);
@@ -582,6 +663,8 @@ int main(int argc, char *argv[]) {
         printf("  %s join <dlg_id>              - Join dialogue\n", argv[0]);
         printf("  %s send <dlg_id> \"<msg>\"      - Send message (use quotes)\n", argv[0]);
         printf("  %s recv                       - Start reader (receive messages)\n", argv[0]);
+        printf("  %s list                       - List active dialogues\n", argv[0]);
+        printf("  %s status                     - Show system status\n", argv[0]);
         exit(1);
     }
     
@@ -633,9 +716,8 @@ int main(int argc, char *argv[]) {
             exit(1);
         }
         int dlg_id = atoi(argv[2]);
-        sem_down(shm->mutex_semid);
+        /* join_dialogue now handles its own mutex protection */
         int idx = join_dialogue(shm, dlg_id, my_pid);
-        sem_up(shm->mutex_semid);
         
         if (idx != -1) {
             printf("PID %d joined dialogue %d\n", my_pid, dlg_id);
@@ -677,6 +759,14 @@ int main(int argc, char *argv[]) {
          * This loop polls for messages and sleeps briefly when none found.
          */
         receive_messages(shm, my_pid);
+
+    } else if (strcmp(argv[1], "list") == 0) {
+        /* List all active dialogues without attaching as participant */
+        list_dialogues(shm);
+        
+    } else if (strcmp(argv[1], "status") == 0) {
+        /* Display comprehensive system status */
+        print_system_status(shm);
 
     } else {
         printf("Unknown command: %s\n", argv[1]);
