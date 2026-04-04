@@ -1,5 +1,7 @@
 # Shared Memory Message Broadcasting System
 
+![System Demo](demo.gif)
+
 [![Build and Test](https://github.com/adamshawky/shared-memory-messaging/workflows/Build%20and%20Test/badge.svg)](https://github.com/adamshawky/shared-memory-messaging/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Platform: Linux|macOS](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-blue)](https://github.com/adamshawky/shared-memory-messaging)
@@ -8,8 +10,6 @@
 A production-ready **multi-process message broadcasting system** demonstrating System V IPC, semaphore synchronization, and concurrent process management. This project showcases advanced systems programming concepts with comprehensive testing and professional development practices.
 
 ## Overview
-
-![System Demo](demo.gif)
 
 This is a robust multi-process message passing system where multiple processes can create dialogues, join existing dialogues, and exchange messages in real-time with guaranteed delivery and thread-safe synchronization primitives. The system ensures exact-once message delivery semantics using bitmap-based read tracking and implements a sophisticated three-semaphore synchronization pattern.
 
